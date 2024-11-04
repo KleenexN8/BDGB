@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>暴打僵尸叶狗</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        #gameContainer {
+            text-align: center;
+        }
+        canvas {
+            border: 2px solid #000;
+            background: #87CEEB;
+        }
+        #score {
+            font-size: 24px;
+            margin-bottom: 10px;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="score">分数: <span id="scoreValue">0</span></div>
+        <canvas id="gameCanvas" width="800" height="400"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('scoreValue');
+
+        const game = {
+            score: 0,
+            player: {
+                x: 300,
+                y: canvas.height - 250,
+                width: 120,
+                height: 240,
+                isAttacking: false,
+                attackFrame: 0,
+                canAttack: true,
+                isHolding: false,
+                comboCount: 0,
+                maxComboCount: 10,
+                baseAttackSpeed: 20,
+                minAttackSpeed: 10,
+                weapon: {
+                    width: 120,
+                    height: 24,
+                    x: 0,
+                    restX: 60,
+                    maxExtend: 120,
+                    yOffset: 40
+                }
+            },
+            zombieDog: {
+                x: 500,
+                y: canvas.height - 180,
+                width: 180,
+                height: 160,
+                health: 100,
+                isHurt: false,
+                hurtFrame: 0,
+                mouthOpenness: 0,
+                shakeAmount: 0,        // 添加颤抖幅度
+                shakeSpeed: 0,         // 添加颤抖速度
+                basePosition: 500,     // 添加基础位置
+                shakePhase: 0          // 添加颤抖相位
+            },
+            bloodParticles: [],
+            bloodPuddles: [],  // 添加血迹数组
+            coins: [],  // 添加金币数组
+        };
+
+        // 修改血液粒子类
+        class BloodParticle {
+            constructor(x, y, directionToPlayer) {
+                this.x = x;
+                this.y = y;
+                // 向玩家方向飞溅
+                this.speedX = -Math.random() * 15 - 5;  // 向左飞溅（玩家方向）
+                this.speedY = -Math.random() * 10 - 5;  // 向上的随机速度
+                this.size = Math.random() * 6 + 2;
+                this.gravity = 0.5;
+                this.life = 30;
+                this.alpha = 1;
+            }
+
+            update() {
+                this.speedY += this.gravity;
+                this.x += this.speedX;
+                this.y += this.speedY;
+                this.life--;
+                this.alpha = this.life / 30;  // 逐渐消失
+            }
+
+            draw(ctx) {
+                ctx.fillStyle = `rgba(200, 0, 0, ${this.alpha})`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // 修改血迹类
+        class BloodPuddle {
+            constructor(x, y, comboCount) {
+                this.x = x;
+                this.y = y;
+                // 基于连击数计算血迹大小
+                const baseSize = 15;  // 最小血迹大小
+                const maxSizeIncrease = 30;  // 最大增加量
+                const sizeIncrease = (comboCount / 10) * maxSizeIncrease;  // 线性增长
+                this.size = baseSize + sizeIncrease;
+                
+                this.alpha = 0.9;
+                this.fadeSpeed = 0.0005;
+                // 根据大小调整形状比例
+                this.scaleX = 2.0;
+                this.scaleY = 0.6;
+            }
+
+            update() {
+                this.alpha = Math.max(0, this.alpha - this.fadeSpeed);
+                return this.alpha > 0;
+            }
+
+            draw(ctx) {
+                ctx.fillStyle = `rgba(150, 0, 0, ${this.alpha})`;
+                ctx.beginPath();
+                ctx.ellipse(
+                    this.x, 
+                    this.y, 
+                    this.size * this.scaleX,
+                    this.size * this.scaleY,
+                    0, 0, Math.PI * 2
+                );
+                ctx.fill();
+            }
+        }
+
+        function createBloodEffect(x, y) {
+            // 创建飞溅的血液粒子
+            for (let i = 0; i < 15; i++) {
+                game.bloodParticles.push(new BloodParticle(x, y));
+            }
+
+            // 创建血迹，传入当前连击数
+            const groundY = canvas.height - 35;
+            game.bloodPuddles.push(new BloodPuddle(
+                game.zombieDog.basePosition - 40,
+                groundY,
+                game.player.comboCount  // 传入连击数
+            ));
+        }
+
+        function drawPlayer() {
+            const x = game.player.x;
+            const y = game.player.y;
+            
+            // 使用深棕色
+            ctx.fillStyle = '#8B4513';
+            
+            // 绘制身体部分（保持不变）
+            ctx.fillRect(x + 30, y + 90, 60, 90);
+            ctx.beginPath();
+            ctx.arc(x + 60, y + 60, 45, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillRect(x + 36, y + 180, 24, 60);
+            ctx.fillRect(x + 66, y + 180, 24, 60);
+            ctx.fillRect(x + 15, y + 105, 24, 60);
+            ctx.fillRect(x + 81, y + 105, 24, 60);
+
+            // 修改木棒绘制逻辑以适应可变速度
+            if (game.player.isAttacking) {
+                const currentAttackDuration = Math.max(
+                    game.player.minAttackSpeed,
+                    game.player.baseAttackSpeed - game.player.comboCount
+                );
+                
+                const progress = game.player.attackFrame / currentAttackDuration;
+                if (progress <= 0.5) {
+                    game.player.weapon.x = game.player.weapon.restX + 
+                        (progress * 2) * game.player.weapon.maxExtend;
+                } else {
+                    game.player.weapon.x = game.player.weapon.restX + 
+                        ((1 - progress) * 2) * game.player.weapon.maxExtend;
+                }
+            } else {
+                game.player.weapon.x = game.player.weapon.restX;
+            }
+
+            // 绘制木棒（调整y位置）
+            ctx.fillStyle = '#8B4513';
+            ctx.fillRect(
+                x + game.player.weapon.x, 
+                y + game.player.height/2 - game.player.weapon.height/2 + game.player.weapon.yOffset,
+                game.player.weapon.width,
+                game.player.weapon.height
+            );
+        }
+
+        function drawDog() {
+            const x = game.zombieDog.x;
+            const y = game.zombieDog.y;
+            
+            // 身体 (加倍尺寸)
+            ctx.fillStyle = '#FF6B6B';
+            ctx.fillRect(x, y + 40, 120, 80);  // 原来的 60,40 加倍
+            
+            // 头部 (加倍尺寸)
+            ctx.beginPath();
+            ctx.ellipse(x + 140, y + 60, 40, 50, 0, 0, Math.PI * 2);  // 原来的 20,25 加倍
+            ctx.fill();
+            
+            // 耳朵 (加倍尺寸)
+            ctx.beginPath();
+            ctx.moveTo(x + 120, y + 20);   // 位置加倍
+            ctx.lineTo(x + 140, y);        // 位置加倍
+            ctx.lineTo(x + 160, y + 20);   // 位置加倍
+            ctx.fill();
+            
+            // 腿 (加倍尺寸)
+            ctx.fillRect(x + 10, y + 120, 20, 40);   // 原来的 10,20 加倍
+            ctx.fillRect(x + 90, y + 120, 20, 40);   // 原来的 10,20 加倍
+            
+            // 眼睛和鼻子 (适当加大)
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            ctx.arc(x + 150, y + 50, 6, 0, Math.PI * 2);  // 眼睛大小加倍
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(x + 170, y + 60, 10, 6, 0, 0, Math.PI * 2);  // 鼻子大小加倍
+            ctx.fill();
+
+            // 绘制可以张合的狗嘴（向下移动）
+            ctx.beginPath();
+            ctx.fillStyle = '#8B0000';  // 深红色嘴巴内部
+            
+            // 计算嘴巴张开的高度
+            const mouthHeight = 30 * game.zombieDog.mouthOpenness;
+            
+            // 将嘴巴位置向下移动 15 像素
+            const mouthY = y + 75;  // 原来是 y + 60
+            
+            // 绘制嘴巴
+            ctx.beginPath();
+            ctx.moveTo(x + 160, mouthY);  // 嘴巴左端
+            ctx.lineTo(x + 190, mouthY);  // 嘴巴右
+            ctx.lineTo(x + 175, mouthY + mouthHeight);  // 嘴巴底部中点
+            ctx.closePath();
+            ctx.fill();
+            
+            // 绘制牙齿（同样向下移动）
+            if (game.zombieDog.mouthOpenness > 0.3) {
+                ctx.fillStyle = '#FFFFFF';
+                // 上排牙齿
+                ctx.fillRect(x + 165, mouthY, 5, 8);
+                ctx.fillRect(x + 175, mouthY, 5, 8);
+                ctx.fillRect(x + 185, mouthY, 5, 8);
+                
+                // 下排牙齿
+                const lowerY = mouthY + mouthHeight - 8;
+                ctx.fillRect(x + 170, lowerY, 5, 8);
+                ctx.fillRect(x + 180, lowerY, 5, 8);
+            }
+
+            // 文字 (适当加大)
+            ctx.font = 'bold 32px Arial';  // 增大字体
+            const text = '叶立正';
+            const textWidth = ctx.measureText(text).width;
+            
+            // 文字背景
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.fillRect(
+                x + (game.zombieDog.width - textWidth)/2 - 5,
+                y - 60,  // 调整文字位置
+                textWidth + 10,
+                40
+            );
+            
+            // 文字
+            ctx.fillStyle = '#FF0000';
+            ctx.fillText(text, 
+                x + (game.zombieDog.width - textWidth)/2,
+                y - 30  // 调整文字位置
+            );
+
+            // 修改血条绘制逻辑
+            const healthBarWidth = 120;
+            const healthBarHeight = 12;
+            
+            // 先绘制血条背景（灰色）
+            ctx.fillStyle = '#808080';
+            ctx.fillRect(
+                x,
+                y - 80,
+                healthBarWidth,
+                healthBarHeight
+            );
+            
+            // 再绘制当前血量（红色）
+            ctx.fillStyle = '#FF0000';
+            ctx.fillRect(
+                x,
+                y - 80,
+                healthBarWidth * (Math.max(0, game.zombieDog.health) / 100),
+                healthBarHeight
+            );
+            
+            // 绘制血条边框
+            ctx.strokeStyle = '#000';
+            ctx.strokeRect(
+                x,
+                y - 80,
+                healthBarWidth,
+                healthBarHeight
+            );
+        }
+
+        function checkHit() {
+            const weaponEnd = game.player.x + game.player.weapon.x + game.player.weapon.width;
+            const weaponY = game.player.y + game.player.height/2 + game.player.weapon.yOffset;
+
+            if (weaponEnd >= game.zombieDog.x && 
+                weaponEnd <= game.zombieDog.x + game.zombieDog.width &&
+                Math.abs(weaponY - (game.zombieDog.y + game.zombieDog.height/2)) < game.zombieDog.height/2) {
+                
+                // 如果达到最大连击，创建金币
+                if (game.player.comboCount >= game.player.maxComboCount) {
+                    createCoins();
+                }
+                
+                game.zombieDog.health = Math.max(0, game.zombieDog.health - 10);
+                game.score += 20;
+                scoreElement.textContent = game.score;
+                
+                game.zombieDog.isHurt = true;
+                game.zombieDog.hurtFrame = 0;
+                createBloodEffect(weaponEnd, weaponY);
+            }
+        }
+
+        function updateDogShake() {
+            if (game.player.comboCount > 0) {
+                // 增加颤抖幅度（最大20像素）
+                game.zombieDog.shakeAmount = Math.min(20, game.player.comboCount * 2);
+                // 增加颤抖速度（基于连击数）
+                game.zombieDog.shakeSpeed = 0.2 + (game.player.comboCount * 0.1);
+                // 更新颤抖相位
+                game.zombieDog.shakePhase += game.zombieDog.shakeSpeed;
+                // 计算新位置
+                game.zombieDog.x = game.zombieDog.basePosition + 
+                    Math.sin(game.zombieDog.shakePhase) * game.zombieDog.shakeAmount;
+            } else {
+                // 逐渐恢复到原始位置
+                game.zombieDog.shakeAmount *= 0.95;
+                game.zombieDog.shakePhase += game.zombieDog.shakeSpeed;
+                game.zombieDog.x = game.zombieDog.basePosition + 
+                    Math.sin(game.zombieDog.shakePhase) * game.zombieDog.shakeAmount;
+                
+                // 当颤抖幅度很小时停止
+                if (game.zombieDog.shakeAmount < 0.1) {
+                    game.zombieDog.shakeAmount = 0;
+                    game.zombieDog.x = game.zombieDog.basePosition;
+                }
+            }
+        }
+
+        // 添加血条粒子类
+        class HealthParticle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                this.speedX = (Math.random() - 0.5) * 8;
+                this.speedY = -Math.random() * 6 - 2;
+                this.size = Math.random() * 4 + 2;
+                this.gravity = 0.3;
+                this.life = 60;
+                this.alpha = 1;
+            }
+
+            update() {
+                this.speedY += this.gravity;
+                this.x += this.speedX;
+                this.y += this.speedY;
+                this.life--;
+                this.alpha = this.life / 60;
+                return this.life > 0;
+            }
+
+            draw(ctx) {
+                ctx.fillStyle = `rgba(${this.color}, ${this.alpha})`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // 在game对象中添加血条粒子数组
+        game.healthParticles = [];
+
+        // 添加创建血条粒子的函数
+        function createHealthParticles() {
+            const healthBarX = game.zombieDog.x;
+            const healthBarY = game.zombieDog.y - 80;
+            const healthBarWidth = 120;
+            const healthBarHeight = 12;
+
+            // 创建红色和灰色粒子
+            for (let i = 0; i < 30; i++) {
+                // 从血条的当前位置创建粒子
+                const particleX = healthBarX + Math.random() * healthBarWidth;
+                const particleY = healthBarY + Math.random() * healthBarHeight;
+                
+                // 随机选择红色或灰色粒子
+                const color = Math.random() < 0.7 ? "200, 0, 0" : "128, 128, 128";
+                game.healthParticles.push(new HealthParticle(particleX, particleY, color));
+            }
+        }
+
+        // 修改金币类，优化性能
+        class Coin {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.size = 20;  // 增大单个金币尺寸
+                this.speedX = (Math.random() - 0.5) * 8;  // 减小初始速度
+                this.speedY = -Math.random() * 12 - 5;
+                this.gravity = 0.4;
+                this.isMovingToPlayer = false;
+                this.alpha = 1;
+                this.rotationAngle = Math.random() * Math.PI * 2;
+                this.rotationSpeed = (Math.random() - 0.5) * 0.1;  // 减慢旋转速度
+                this.value = Math.floor(Math.random() * 3 + 1) * 10;  // 随机金币价值
+            }
+
+            update() {
+                if (!this.isMovingToPlayer) {
+                    this.speedY += this.gravity;
+                    this.x += this.speedX;
+                    this.y += this.speedY;
+                    
+                    if (this.y > canvas.height - 50 - this.size) {
+                        this.y = canvas.height - 50 - this.size;
+                        this.speedY = -this.speedY * 0.5;  // 减小反弹力
+                        this.speedX *= 0.7;
+                    }
+                } else {
+                    const dx = game.player.x + game.player.width/2 - this.x;
+                    const dy = game.player.y + game.player.height/2 - this.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance < 20) {
+                        this.alpha -= 0.2;  // 加快消失速度
+                        game.score += this.value;  // 增加分数
+                        scoreElement.textContent = game.score;
+                        return this.alpha > 0;
+                    }
+
+                    const speed = 20;  // 加快吸收速度
+                    this.x += (dx / distance) * speed;
+                    this.y += (dy / distance) * speed;
+                }
+
+                this.rotationAngle += this.rotationSpeed;
+                return true;
+            }
+
+            draw(ctx) {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.rotationAngle);
+                ctx.globalAlpha = this.alpha;
+
+                // 绘制金币
+                ctx.fillStyle = '#FFD700';
+                ctx.beginPath();
+                ctx.arc(0, 0, this.size, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // 金币内部纹理
+                ctx.fillStyle = '#DAA520';
+                ctx.font = 'bold 16px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('¥', 0, 0);
+
+                ctx.restore();
+            }
+        }
+
+        // 修改创建金币函数
+        function createCoins() {
+            const healthBarX = game.zombieDog.x;
+            const healthBarY = game.zombieDog.y - 80;
+            
+            // 减少金币数量到3个
+            for (let i = 0; i < 3; i++) {
+                const coin = new Coin(
+                    healthBarX + Math.random() * 100,
+                    healthBarY + Math.random() * 10
+                );
+                game.coins.push(coin);
+            }
+        }
+
+        function update() {
+            // 更新玩家攻击
+            if (game.player.isAttacking) {
+                game.player.attackFrame++;
+
+                // 计算当前攻击所需的总帧数（随连击数减少）
+                const currentAttackDuration = Math.max(
+                    game.player.minAttackSpeed,
+                    game.player.baseAttackSpeed - game.player.comboCount
+                );
+
+                // 调整检测时间窗口
+                const hitCheckStart = currentAttackDuration * 0.4;
+                const hitCheckEnd = currentAttackDuration * 0.6;
+
+                if (game.player.attackFrame >= hitCheckStart && 
+                    game.player.attackFrame <= hitCheckEnd) {
+                    checkHit();
+                }
+
+                if (game.player.attackFrame >= currentAttackDuration) {
+                    game.player.isAttacking = false;
+                    game.player.weapon.x = game.player.weapon.restX;
+                    
+                    // 如果还在按住，开始下一次攻击并增加连击数
+                    if (game.player.isHolding && game.player.canAttack) {
+                        game.player.isAttacking = true;
+                        game.player.attackFrame = 0;
+                        game.player.comboCount = Math.min(
+                            game.player.comboCount + 1,
+                            game.player.maxComboCount
+                        );
+                    }
+                }
+            }
+
+            // 更新狗嘴动画
+            if (game.zombieDog.isHurt) {
+                game.zombieDog.hurtFrame++;
+                
+                // 在受伤的前半段张开嘴巴
+                if (game.zombieDog.hurtFrame <= 10) {
+                    game.zombieDog.mouthOpenness = game.zombieDog.hurtFrame / 10;
+                } else {
+                    // 在后半段闭合嘴巴
+                    game.zombieDog.mouthOpenness = (20 - game.zombieDog.hurtFrame) / 10;
+                }
+                
+                // 结束受伤动画
+                if (game.zombieDog.hurtFrame >= 20) {
+                    game.zombieDog.isHurt = false;
+                    game.zombieDog.mouthOpenness = 0;
+                }
+            }
+
+            // 更新血液粒子
+            game.bloodParticles = game.bloodParticles.filter(particle => {
+                particle.update();
+                return particle.life > 0;
+            });
+
+            // 更新血迹
+            game.bloodPuddles = game.bloodPuddles.filter(puddle => {
+                return puddle.update();
+            });
+
+            // 更新叶狗颤抖
+            updateDogShake();
+
+            // 更新血条粒子
+            game.healthParticles = game.healthParticles.filter(particle => {
+                return particle.update();
+            });
+
+            // 更新金币
+            game.coins = game.coins.filter(coin => {
+                return coin.update();
+            });
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // 先绘制地面
+            ctx.fillStyle = '#90EE90';
+            ctx.fillRect(0, canvas.height - 50, canvas.width, 50);
+            
+            // 绘制血迹（在地面上方）
+            game.bloodPuddles.forEach(puddle => {
+                puddle.draw(ctx);
+            });
+            
+            drawPlayer();
+            drawDog();
+
+            // 绘制血液粒子（在最上层）
+            game.bloodParticles.forEach(particle => {
+                particle.draw(ctx);
+            });
+
+            // 绘制血条粒子
+            game.healthParticles.forEach(particle => {
+                particle.draw(ctx);
+            });
+
+            // 绘制金币
+            game.coins.forEach(coin => {
+                coin.draw(ctx);
+            });
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // 修改鼠标事件处理
+        canvas.addEventListener('mousedown', (event) => {
+            game.player.isHolding = true;
+            if (!game.player.isAttacking && game.player.canAttack) {
+                game.player.isAttacking = true;
+                game.player.attackFrame = 0;
+                game.player.comboCount = 0;  // 开始新的连击
+            }
+        });
+
+        canvas.addEventListener('mouseup', (event) => {
+            game.player.isHolding = false;
+            // 触发所有金币向玩家移动
+            game.coins.forEach(coin => {
+                coin.isMovingToPlayer = true;
+            });
+            
+            setTimeout(() => {
+                game.player.comboCount = 0;
+            }, 500);
+        });
+
+        canvas.addEventListener('mouseleave', (event) => {
+            game.player.isHolding = false;
+            // 不立即重置连击数，让它缓慢衰减
+            setTimeout(() => {
+                game.player.comboCount = 0;
+            }, 500);  // 500ms后重置
+        });
+
+        gameLoop();
+    </script>
+</body>
+</html> 
